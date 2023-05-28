@@ -49,8 +49,10 @@ use std::fmt::{Display, Formatter};
 #[cfg(feature = "pyo3")]
 pub use version::PyVersion;
 pub use version::{LocalSegment, Operator, PreRelease, Version};
+#[cfg(feature = "pubgrub")]
+#[cfg(feature = "pyo3")]
+pub use version_specifier::PyRange;
 pub use version_specifier::{parse_version_specifiers, VersionSpecifier, VersionSpecifiers};
-
 mod version;
 mod version_specifier;
 
@@ -83,6 +85,8 @@ impl Error for Pep440Error {}
 #[pymodule]
 #[pyo3(name = "_pep440_rs")]
 pub fn python_module(_py: Python, module: &PyModule) -> PyResult<()> {
+    module.add_class::<PyRange>()?;
+    module.add_class::<PreRelease>()?;
     module.add_class::<PyVersion>()?;
     module.add_class::<Operator>()?;
     module.add_class::<VersionSpecifier>()?;

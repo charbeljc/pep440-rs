@@ -24,6 +24,9 @@ use std::ops::Deref;
 use std::str::FromStr;
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(feature = "pubgrub")]
+use pubgrub::range::Range;
+
 #[cfg(feature = "tracing")]
 use tracing::warn;
 
@@ -136,7 +139,8 @@ impl VersionSpecifiers {
 
     /// PEP 440 serialization
     pub fn __repr__(&self) -> String {
-        self.to_string()
+        let vs = self.to_string();
+        format!(r#"VersionSpecifiers("{vs}")"#)
     }
 
     /// Get the nth VersionSpecifier
@@ -160,6 +164,18 @@ impl VersionSpecifiers {
     /// Get the number of VersionSpecifier
     pub fn __len__(&self) -> usize {
         self.0.len()
+    }
+
+    #[cfg(feature = "pubgrub")]
+    /// Convert to PubGrub Range
+    pub fn to_pubgrub(&self) -> PyResult<PyRange> {
+        let mut range = PyRange(Range::any());
+        for vs in &self.0 {
+            let this = vs.to_pubgrub()?;
+            range = range.intersection(&this);
+
+        }
+        Ok(range)
     }
 }
 
@@ -258,6 +274,61 @@ impl VersionSpecifier {
         self.hash(&mut hasher);
         hasher.finish()
     }
+
+    /// Convert to pubgrub Range
+    #[cfg(feature = "pubgrub")]
+    pub fn to_pubgrub(&self) -> PyResult<PyRange> {
+        let version = PyVersion(self.version.clone());
+        let range = match self.operator {
+            Operator::Equal => Range::exact(version),
+            Operator::EqualStar => {
+                let mut release = version.release();
+                release.push(0);
+
+                let next = tilde_next(&release)?;
+                Range::between(version, next)
+            }
+            Operator::ExactEqual => Range::exact(version),
+            Operator::NotEqual => Range::exact(version).negate(),
+            Operator::NotEqualStar => {
+                let mut release = version.release();
+                release.push(0);
+
+                let next = tilde_next(&release)?;
+                Range::between(version, next).negate()
+            }
+            Operator::TildeEqual => {
+                let next = tilde_next(&version.release())?;
+                Range::between(version, next)
+            }
+            Operator::LessThan => Range::strictly_lower_than(version),
+            Operator::LessThanEqual => Range::strictly_lower_than(PyVersion(version.0.next())),
+            Operator::GreaterThan => Range::higher_than(PyVersion(version.0.next())),
+            Operator::GreaterThanEqual => Range::higher_than(version),
+        };
+        Ok(PyRange(range))
+    }
+}
+
+#[cfg(feature = "pyo3")]
+#[cfg(feature = "pubgrub")]
+fn tilde_next(release: &[usize]) -> PyResult<PyVersion> {
+
+    let next = match release.len() {
+        0 | 1 => {
+            return Err(PyValueError::new_err(format!(
+                "Invalid release for ~=` operator {release:?}"
+            )))
+        }
+        2 => Version::from_release(vec![release[0] + 1]),
+        3 => Version::from_release(vec![release[0], release[1] + 1]),
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "Unexpected release len: {other}"
+            )))
+        }
+    };
+    Ok(PyVersion(next))
 }
 
 /// https://github.com/serde-rs/serde/issues/1316#issue-332908452
@@ -537,7 +608,73 @@ pub fn parse_version_specifiers(spec: &str) -> Result<Vec<VersionSpecifier>, Pep
     }
     Ok(version_ranges)
 }
+//#[derive(Serialize, Deserialize)]
+#[cfg(feature = "pubgrub")]
+#[pyclass(subclass)]
+#[pyo3(name = "Range")]
+/// pubgrub version range
+pub struct PyRange(pub Range<PyVersion>);
+#[cfg(feature = "pubgrub")]
+#[pymethods]
+impl PyRange {
+    fn __str__(&self) -> String {
+        self.0.to_string()
+    }
 
+    fn __repr__(&self) -> String {
+        let s = self.0.to_string();
+        format!(r#"Range("{s}")"#)
+    }
+
+    #[staticmethod]
+    /// empty range
+    pub fn none() -> Self {
+        Self(Range::<PyVersion>::none())
+    }
+    #[staticmethod]
+    /// any version
+    pub fn any() -> Self {
+        Self(Range::<PyVersion>::any())
+    }
+    #[staticmethod]
+    /// exact version
+    pub fn exact(v: PyVersion) -> Self {
+        Self(Range::<PyVersion>::exact(v))
+    }
+    #[staticmethod]
+    /// higher than
+    pub fn higher_than(v: PyVersion) -> Self {
+        Self(Range::<PyVersion>::higher_than(v))
+    }
+    #[staticmethod]
+    /// strictly lower than
+    pub fn strictly_lower_than(v: PyVersion) -> Self {
+        Self(Range::<PyVersion>::strictly_lower_than(v))
+    }
+    #[staticmethod]
+    /// between
+    pub fn between(v1: PyVersion, v2: PyVersion) -> Self {
+        Self(Range::<PyVersion>::between(v1, v2))
+    }
+    /// negate
+    pub fn negate(&self) -> Self {
+        Self(self.0.negate())
+    }
+
+    /// union
+    pub fn union(&self, other: &Self) -> Self {
+        Self(self.0.union(&other.0))
+    }
+
+    /// intersection
+    pub fn intersection(&self, other: &Self) -> Self {
+        Self(self.0.intersection(&other.0))
+    }
+    /// contains
+    pub fn contains(&self, version: &PyVersion) -> bool {
+        self.0.contains(version)
+    }
+}
 #[cfg(test)]
 mod test {
     use crate::{Operator, Version, VersionSpecifier, VersionSpecifiers};

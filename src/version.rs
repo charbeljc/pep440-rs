@@ -1,9 +1,13 @@
 use lazy_static::lazy_static;
 #[cfg(feature = "pyo3")]
+#[cfg(feature = "pubgrub")]
+use pyo3::ToPyObject;
+#[cfg(feature = "pyo3")]
 use pyo3::{
     basic::CompareOp, exceptions::PyValueError, pyclass, pymethods, IntoPy, PyObject, PyResult,
     Python,
 };
+
 use regex::Captures;
 use regex::Regex;
 #[cfg(feature = "serde")]
@@ -15,6 +19,9 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::iter;
 use std::str::FromStr;
+
+#[cfg(feature = "pubgrub")]
+use pubgrub::version::Version as PubGrubVersion;
 
 #[cfg(feature = "tracing")]
 use tracing::warn;
@@ -154,7 +161,8 @@ impl Operator {
     }
 
     fn __repr__(&self) -> String {
-        self.to_string()
+        let s = self.to_string();
+        format!(r#"Operator("{s}")"#)
     }
 }
 
@@ -170,6 +178,24 @@ pub enum PreRelease {
     Beta,
     /// release candidate prerelease
     Rc,
+}
+#[cfg(feature = "pyo3")]
+#[pymethods]
+impl PreRelease {
+    /// hash method
+    #[cfg(feature = "pyo3")]
+    pub fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        self.to_string()
+    }
 }
 
 impl FromStr for PreRelease {
@@ -306,7 +332,7 @@ impl IntoPy<PyObject> for Version {
 
 /// Workaround for https://github.com/PyO3/pyo3/pull/2786
 #[cfg(feature = "pyo3")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[pyclass(name = "Version")]
 pub struct PyVersion(pub Version);
 
@@ -369,12 +395,11 @@ impl PyVersion {
     /// Parses a PEP 440 version string
     #[cfg(feature = "pyo3")]
     #[new]
-    pub fn parse(version: String) -> PyResult<Self> {
+    pub fn parse(version: &str) -> PyResult<Self> {
         Ok(Self(
             Version::from_str(&version).map_err(PyValueError::new_err)?,
         ))
     }
-
     // Maps the error type
     /// Parse a PEP 440 version optionally ending with `.*`
     #[cfg(feature = "pyo3")]
@@ -410,11 +435,43 @@ impl PyVersion {
         op.matches(self.0.cmp(&other.0))
     }
 
-    fn any_prerelease(&self) -> bool {
+    /// Is this version a prerelease
+    pub fn any_prerelease(&self) -> bool {
         self.0.any_prerelease()
+    }
+
+    /// Get the minimal next PEP 440 version
+    #[cfg(feature = "pyo3")]
+    #[cfg(feature = "pubgrub")]
+    #[pyo3(name = "bump")]
+    pub fn py_bump(&self) -> PyResult<Self> {
+        Ok(Self(self.0.next()))
+    }
+
+    /// Get the minimal PEP 440 version
+    #[cfg(feature = "pyo3")]
+    #[cfg(feature = "pubgrub")]
+    #[pyo3(name = "lowest")]
+    #[staticmethod]
+    pub fn py_lowest() -> PyResult<Self> {
+        Ok(Self(Version::lowest()))
     }
 }
 
+#[cfg(feature = "pyo3")]
+#[cfg(feature = "pubgrub")]
+impl ToPyObject for PyVersion {
+    fn to_object(&self, py: Python<'_>) -> PyObject {
+        self.clone().into_py(py)
+    }
+}
+
+#[cfg(feature = "pyo3")]
+impl Display for PyVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 /// https://github.com/serde-rs/serde/issues/1316#issue-332908452
 #[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for Version {
@@ -448,6 +505,50 @@ impl Version {
             post: None,
             dev: None,
             local: None,
+        }
+    }
+    /// Constructor for the lowest possible version
+    #[cfg(feature = "pubgrub")]
+    pub fn lowest() -> Self {
+        Self {
+            epoch: 0,
+            release: [0, 0, 0].into(),
+            pre: Some((PreRelease::Alpha, 0)),
+            post: None,
+            dev: Some(0),
+            local: None,
+        }
+    }
+
+    /// Get the smallest next possible version
+    #[cfg(feature = "pubgrub")]
+    pub fn next(&self) -> Self {
+        match (self.dev, self.post) {
+            (Some(dev), post) => Self {
+                epoch: self.epoch,
+                release: self.release.to_owned(),
+                pre: self.pre.to_owned(),
+                post: post,
+                dev: Some(dev + 1),
+                local: None,
+            },
+            (None, Some(post)) => Self {
+                epoch: self.epoch,
+                release: self.release.to_owned(),
+                pre: self.pre.to_owned(),
+                post: Some(post + 1),
+                dev: None,
+                local: None,
+            },
+
+            (None, None) => Self {
+                epoch: self.epoch,
+                release: self.release.to_owned(),
+                pre: self.pre.to_owned(),
+                post: Some(0),
+                dev: Some(0),
+                local: None,
+            },
         }
     }
 
@@ -814,6 +915,27 @@ impl Version {
             local,
         };
         Ok((version, star))
+    }
+}
+
+#[cfg(feature = "pubgrub")]
+impl PubGrubVersion for Version {
+    fn lowest() -> Self {
+        Version::lowest()
+    }
+    fn bump(&self) -> Self {
+        self.next()
+    }
+}
+
+#[cfg(feature = "pyo3")]
+#[cfg(feature = "pubgrub")]
+impl PubGrubVersion for PyVersion {
+    fn lowest() -> Self {
+        Self(Version::lowest())
+    }
+    fn bump(&self) -> Self {
+        Self(self.0.next())
     }
 }
 
