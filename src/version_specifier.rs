@@ -177,6 +177,12 @@ impl VersionSpecifiers {
         }
         Ok(range)
     }
+
+    #[pyo3(name = "contains")]
+    /// Whether all specifiers match the given version
+    pub fn py_contains(&self, version: PyVersion) -> bool {
+        self.contains(&version.0)
+    }
 }
 
 #[cfg(feature = "serde")]
